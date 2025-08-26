@@ -87,7 +87,7 @@ cp .env.example .env     # update with MySQL creds
 2. Configure Database
 - Open phpMyAdmin
 - create database and tables using the query above
-- Update .env file with your MySQL credentials.
+- Update .env file with your actual MySQL credentials.
 
 3. Run server
 ```bash
