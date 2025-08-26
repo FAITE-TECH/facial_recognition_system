@@ -31,9 +31,9 @@ It is designed for extensibility and easy deployment with FastAPI, MySQL, and li
 - Environment: Python venv
 
 ## Database design
-Option 1: Import the SQL file  
+Option 1: Import the SQL file (Located at scripts/class_attendance.sql)
 ```bash
-mysql -u root -p class_attendance < database/class_attendance.sql
+mysql -u root -p class_attendance < scripts/class_attendance.sql
 ```
 
 Option 2: Run the following queries manually in phpMyAdmin
@@ -75,8 +75,8 @@ CREATE TABLE `students` (
 ## Setup Instructions
 1. Clone & Setup
 ```bash
-git clone <your-repo>
-cd smart-classroom
+git clone https://github.com/FAITE-TECH/facial_recognition_system.git
+cd cd face_attendance_backend
 python -m venv .venv
 .venv\Scripts\activate   # Windows
 pip install -r requirements.txt
