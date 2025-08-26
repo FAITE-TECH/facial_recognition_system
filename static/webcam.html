@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Face Attendance Demo</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; }
+      video, canvas { width: 100%; max-width: 640px; border-radius: 12px; }
+      button { padding: 10px 16px; border-radius: 8px; border: 1px solid #ccc; background: #f7f7f7; cursor: pointer; }
+      .row { display: flex; gap: 10px; align-items: center; }
+      input, select { padding: 8px; border-radius: 6px; border: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <h1>Face Attendance (Demo)</h1>
+    <p>Use your webcam to send a frame to the backend for <b>mark_attendance</b>.</p>
+    <div class="row">
+      <label>Class:</label>
+      <input id="className" value="Math-101" />
+      <label>Session:</label>
+      <input id="sessionId" value="2025-08-19-AM" />
+    </div>
+    <br />
+    <video id="video" autoplay playsinline></video><br /><br />
+    <div class="row">
+      <button id="snapBtn">Mark Attendance</button>
+      <span id="status"></span>
+    </div>
+    <canvas id="canvas" style="display:none;"></canvas>
+
+    <script>
+      const video = document.getElementById('video');
+      const canvas = document.getElementById('canvas');
+      const snapBtn = document.getElementById('snapBtn');
+      const statusEl = document.getElementById('status');
+
+      async function init() {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = stream;
+      }
+
+      function dataURLtoBlob(dataurl) {
+        var arr = dataurl.split(','), mime = arr[0].match(/:(.*?);/)[1],
+            bstr = atob(arr[1]), n = bstr.length, u8arr = new Uint8Array(n);
+        while(n--){ u8arr[n] = bstr.charCodeAt(n); }
+        return new Blob([u8arr], {type:mime});
+      }
+
+      snapBtn.onclick = async () => {
+        const className = document.getElementById('className').value;
+        const sessionId = document.getElementById('sessionId').value;
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0);
+
+        const dataURL = canvas.toDataURL('image/jpeg');
+        const blob = dataURLtoBlob(dataURL);
+
+        const form = new FormData();
+        form.append('class_name', className);
+        form.append('session_id', sessionId);
+        form.append('image', blob, 'frame.jpg');
+
+        statusEl.textContent = "Sending...";
+        try {
+          const res = await fetch('http://127.0.0.1:8000/attendance/mark', {
+            method: 'POST',
+            body: form
+          });
+          const js = await res.json();
+          if (res.ok && js.status === 'allowed') {
+            statusEl.textContent = `✅ Allowed: ${js.name} (sim=${js.similarity.toFixed(3)})`;
+          } else {
+            statusEl.textContent = `❌ Rejected: ${js.reason || 'Unknown'} (sim=${js.similarity?.toFixed?.(3)})`;
+          }
+        } catch (e) {
+          statusEl.textContent = "Error: " + e.message;
+        }
+      };
+
+      init();
+    </script>
+  </body>
+</html>

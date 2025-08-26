@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Face Attendance System</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; background: #f9f9f9; }
+    h2 { margin-top: 0; }
+    nav { margin-bottom: 20px; }
+    nav button { margin-right: 10px; padding: 8px 14px; }
+    section { display: none; padding: 15px; background: #fff; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+    section.active { display: block; }
+    label { display: block; margin: 8px 0; }
+    input, select { padding: 6px; width: 300px; }
+    #video { border: 1px solid #ccc; margin-top: 10px; }
+    .error { color: red; }
+    pre { background: #eee; padding: 10px; max-height: 200px; overflow: auto; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td { border: 1px solid #ccc; padding: 6px; text-align: left; }
+  </style>
+</head>
+<body>
+  <h1>📷 Face Attendance System</h1>
+
+  <nav>
+    <button onclick="showTab('register')">Register Student</button>
+    <button onclick="showTab('embedding')">Add Embedding</button>
+    <button onclick="showTab('attendance')">Mark Attendance</button>
+    <button onclick="showTab('records')">View Attendance</button>
+    <button onclick="showTab('students')">View Students</button>
+  </nav>
+
+  <section id="register" class="active">
+    <h2>Register New Student</h2>
+    <form id="registerForm">
+      <label>Name: <input type="text" name="name" required></label>
+      <label>Email: <input type="email" name="email"></label>
+      <label>Roll Number: <input type="text" name="roll_number"></label>
+      <label>Photo: <input type="file" name="image" accept="image/*" required></label>
+      <button type="submit">Register</button>
+    </form>
+    <p id="registerStatus"></p>
+  </section>
+
+  <section id="embedding">
+    <h2>Add Embedding for Student</h2>
+    <form id="embeddingForm">
+      <label>Student ID: <input type="number" name="student_id" required></label>
+      <label>Photo: <input type="file" name="image" accept="image/*" required></label>
+      <button type="submit">Add Embedding</button>
+    </form>
+    <p id="embeddingStatus"></p>
+  </section>
+
+  <section id="attendance">
+    <h2>Mark Attendance</h2>
+    <video id="video" width="640" height="480" autoplay></video>
+    <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+
+    <div>
+      <label>Class: <input id="class_name" type="text" placeholder="e.g. Math101"></label>
+      <label>Session ID: <input id="session_id" type="text" placeholder="e.g. morning-1"></label>
+    </div>
+    <button id="capture">Mark Attendance</button>
+    <p id="status"></p>
+  </section>
+
+  <section id="records">
+    <h2>Today’s Attendance</h2>
+    <button onclick="loadAttendance()">Refresh</button>
+    <table id="attendanceTable">
+      <thead>
+        <tr><th>ID</th><th>Name</th><th>Roll</th><th>Class</th><th>Session</th><th>Time</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="students">
+    <h2>All Registered Students</h2>
+    <button onclick="loadStudents()">Refresh</button>
+    <table id="studentsTable">
+      <thead>
+        <tr><th>ID</th><th>Name</th><th>Email</th><th>Roll Number</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <script>
+    function showTab(id) {
+      document.querySelectorAll("section").forEach(s => s.classList.remove("active"));
+      document.getElementById(id).classList.add("active");
+    }
+
+    document.getElementById("registerForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      try {
+        const res = await fetch("http://127.0.0.1:8000/students/register", { method: "POST", body: formData });
+        const data = await res.json();
+        document.getElementById("registerStatus").innerText = JSON.stringify(data, null, 2);
+      } catch (err) {
+        document.getElementById("registerStatus").innerText = "❌ Error: " + err;
+      }
+    });
+
+    document.getElementById("embeddingForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const student_id = formData.get("student_id");
+      try {
+        const res = await fetch(`http://127.0.0.1:8000/students/${student_id}/add-embedding`, { method: "POST", body: formData });
+        const data = await res.json();
+        document.getElementById("embeddingStatus").innerText = JSON.stringify(data, null, 2);
+      } catch (err) {
+        document.getElementById("embeddingStatus").innerText = "❌ Error: " + err;
+      }
+    });
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const statusEl = document.getElementById('status');
+
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = stream;
+        statusEl.innerText = "✅ Camera started";
+      } catch (err) {
+        statusEl.innerText = "❌ Camera error: " + err.name;
+      }
+    }
+    startCamera();
+
+    document.getElementById("capture").addEventListener("click", async () => {
+      const ctx = canvas.getContext('2d');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      canvas.toBlob(async (blob) => {
+        const formData = new FormData();
+        formData.append("class_name", document.getElementById("class_name").value || "Unknown");
+        formData.append("session_id", document.getElementById("session_id").value || new Date().toISOString());
+        formData.append("image", blob, "frame.jpg");
+
+        try {
+          const res = await fetch("http://127.0.0.1:8000/attendance/mark", { method: "POST", body: formData });
+          const data = await res.json();
+          statusEl.innerText = JSON.stringify(data, null, 2);
+        } catch (err) {
+          statusEl.innerText = "❌ Error: " + err;
+        }
+      }, "image/jpeg");
+    });
+
+    async function loadAttendance() {
+      try {
+        const res = await fetch("http://127.0.0.1:8000/attendance/today");
+        const data = await res.json();
+        const tbody = document.querySelector("#attendanceTable tbody");
+        tbody.innerHTML = "";
+        data.rows.forEach(r => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${r.id}</td><td>${r.name}</td><td>${r.roll_number}</td><td>${r.class_name}</td><td>${r.session_id}</td><td>${r.attended_at}</td>`;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        alert("Error loading attendance: " + err);
+      }
+    }
+
+    async function loadStudents() {
+      try {
+        const res = await fetch("http://127.0.0.1:8000/students");
+        const data = await res.json();
+        const tbody = document.querySelector("#studentsTable tbody");
+        tbody.innerHTML = "";
+        data.forEach(s => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${s.id}</td><td>${s.name}</td><td>${s.email}</td><td>${s.roll_number}</td>`;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        alert("Error loading students: " + err);
+      }
+    }
+  </script>
+</body>
+</html>

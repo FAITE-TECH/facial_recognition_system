@@ -1,0 +1,188 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Secure Exam</title>
+  <style>
+    #exam-locked { 
+      display:none; 
+      padding:12px; 
+      border:2px solid #f00; 
+      margin:10px 0; 
+      background:#fee;
+      color:#900;
+    }
+    #exam-container { 
+      border:1px solid #ccc; 
+      padding:12px; 
+      margin-top:10px; 
+      display:none;
+    }
+    #unlock-request {
+      margin-top:10px;
+      display:none;
+    }
+    video { 
+      width: 420px; 
+      height: 315px; 
+      background:#000; 
+      border:1px solid #666;
+    }
+  </style>
+</head>
+<body>
+  <h1>Secure Exam</h1>
+
+  <div id="login-section">
+    <label>Student ID: <input id="student_id" type="number" /></label>
+    <label>Exam Code: <input id="exam_code" type="text" value="EXAM-001"/></label>
+    <button id="startBtn">Start Exam</button>
+  </div>
+
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+
+  <div id="exam-locked">
+    <strong>⚠ Exam Locked:</strong> 
+    <span id="lock-reason"></span>
+    <div id="unlock-request">
+      <button id="unlockBtn">Request Unlock</button>
+      <p id="unlock-msg" style="color:#555; font-size:0.9em;"></p>
+    </div>
+  </div>
+
+  <div id="exam-container">
+    <p><strong>Exam is active. Answer the questions below:</strong></p>
+    <textarea rows="6" cols="50" placeholder="Write your answers here..."></textarea><br/>
+    <button id="endBtn">Submit & End Exam</button>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('startBtn');
+    const endBtn = document.getElementById('endBtn');
+    const lockBox = document.getElementById('exam-locked');
+    const lockReason = document.getElementById('lock-reason');
+    const unlockRequest = document.getElementById('unlock-request');
+    const unlockBtn = document.getElementById('unlockBtn');
+    const unlockMsg = document.getElementById('unlock-msg');
+    const examBox = document.getElementById('exam-container');
+
+    let sessionId = null;
+    let monitorTimer = null;
+
+    async function initCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        video.srcObject = stream;
+      } catch (e) {
+        alert("Camera access denied! Exam cannot continue.");
+      }
+    }
+
+    function snapBlob() {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      return new Promise((resolve) => {
+        canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.9);
+      });
+    }
+
+    async function postFrame(url, formData) {
+      const res = await fetch(url, { method: 'POST', body: formData });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    async function startExam() {
+      const studentId = document.getElementById('student_id').value;
+      const examCode = document.getElementById('exam_code').value;
+      if (!studentId || !examCode) { alert('Enter student id and exam code'); return; }
+
+      const blob = await snapBlob();
+      const fd = new FormData();
+      fd.append('student_id', studentId);
+      fd.append('exam_code', examCode);
+      fd.append('image', new File([blob], 'start.jpg', { type: 'image/jpeg' }));
+
+      try {
+        const data = await postFrame('/exam/start', fd);
+        sessionId = data.session_id;
+        lockBox.style.display = 'none';
+        examBox.style.display = 'block';
+
+        // start monitoring every 3s
+        monitorTimer = setInterval(monitorExam, 3000);
+      } catch (e) {
+        alert("Failed to start exam: " + e.message);
+      }
+    }
+
+    async function monitorExam() {
+      if (!sessionId) return;
+      const blob = await snapBlob();
+      const fd = new FormData();
+      fd.append('session_id', sessionId);
+      fd.append('image', new File([blob], 'frame.jpg', { type: 'image/jpeg' }));
+
+      try {
+        const data = await postFrame('/exam/monitor', fd);
+        if (data.status === 'locked') {
+          lockReason.textContent = data.reason || 'Suspicious behavior detected';
+          lockBox.style.display = 'block';
+          examBox.style.display = 'none';
+          unlockRequest.style.display = 'block';
+        } else {
+          lockBox.style.display = 'none';
+          examBox.style.display = 'block';
+          unlockRequest.style.display = 'none';
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function requestUnlock() {
+      if (!sessionId) return;
+      unlockMsg.textContent = "Requesting teacher approval...";
+      const fd = new FormData();
+      fd.append('session_id', sessionId);
+
+      try {
+        const data = await postFrame('/exam/unlock', fd);
+        if (data.status === 'active') {
+          unlockMsg.textContent = "Teacher approved. Exam resumed.";
+          lockBox.style.display = 'none';
+          examBox.style.display = 'block';
+        } else {
+          unlockMsg.textContent = "Still locked. Wait for teacher approval.";
+        }
+      } catch (e) {
+        unlockMsg.textContent = "Unlock failed: " + e.message;
+      }
+    }
+
+    async function endExam() {
+      if (!sessionId) return;
+      const fd = new FormData();
+      fd.append('session_id', sessionId);
+
+      try {
+        await postFrame('/exam/end', fd);
+        clearInterval(monitorTimer);
+        alert("Exam submitted successfully!");
+        examBox.style.display = 'none';
+      } catch (e) {
+        alert("Error ending exam: " + e.message);
+      }
+    }
+
+    startBtn.addEventListener('click', startExam);
+    unlockBtn.addEventListener('click', requestUnlock);
+    endBtn.addEventListener('click', endExam);
+
+    initCamera();
+  </script>
+</body>
+</html>

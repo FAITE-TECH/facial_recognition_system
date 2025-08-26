@@ -1,0 +1,34 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environments
+.env
+
+# Logs & data
+*.log
+*.pkl
+*.db
+*.sqlite3
+
+# Large/binary files
+*.mp4
+*.zip
+*.tar
+*.gz
+*.h5
+*.tflite
+*.onnx
+
+# Node.js
+node_modules/
+
+# System files
+.DS_Store
+Thumbs.db
