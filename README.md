@@ -1,4 +1,4 @@
-# Smart Classroom System (FastAPI + InsightFace + MediaPipe + MySQL)
+# facial recognition system (FastAPI + InsightFace + MediaPipe + MySQL)
 This project provides a smart classroom backend with two main features:
 - Face Recognition Attendance System
 - Exam Monitoring (Cheating Detection)
