@@ -76,7 +76,7 @@ CREATE TABLE `students` (
 1. Clone & Setup
 ```bash
 git clone https://github.com/FAITE-TECH/facial_recognition_system.git
-cd cd face_attendance_backend
+cd face_attendance_backend
 python -m venv .venv
 .venv\Scripts\activate   # Windows
 pip install -r requirements.txt
