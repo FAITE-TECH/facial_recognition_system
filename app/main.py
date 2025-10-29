@@ -2,10 +2,10 @@ import os
 import uuid
 import math
 import datetime
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
-import cv2  # webcam, face detection
+import cv2
 import mediapipe as mp
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Streamin
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from .video import extract_best_frame_from_video
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -22,46 +23,13 @@ from .models import Student, FaceEmbedding, FaceImage, Attendance, Exam, ExamSes
 from .config import FACE_THRESHOLD, SAVE_IMAGES, IMAGE_DIR
 from .face import read_image_from_bytes, extract_normed_embedding, best_match
 
-
-Base.metadata.create_all(bind=engine)
-app = FastAPI(title="Face Recognition Attendance System")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-os.makedirs(IMAGE_DIR, exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
-camera = cv2.VideoCapture(0)
-
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(
-    static_image_mode=False,
-    max_num_faces=1,
-    refine_landmarks=True,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
-
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-
-YAW_MAX_DEG = 30
-PITCH_MAX_DEG = 25
-LOOK_AWAY_REQUIRED_HITS = 3
-LOOK_AWAY_WINDOW_SECONDS = 10
-
 def save_image(student_id: int, img_bytes: bytes) -> str:
     fname = f"{student_id}_{uuid.uuid4().hex}.jpg"
     fpath = os.path.join(IMAGE_DIR, fname)
     with open(fpath, "wb") as f:
         f.write(img_bytes)
     return fpath
+
 
 def load_all_embeddings(db: Session):
     rows = db.execute(select(FaceEmbedding.student_id, FaceEmbedding.embedding)).all()
@@ -74,7 +42,8 @@ def load_all_embeddings(db: Session):
         emb_list.append((sid, vec))
     return emb_list
 
-def gen_frames():
+
+def gen_frames(camera):
     while True:
         success, frame = camera.read()
         if not success:
@@ -84,9 +53,11 @@ def gen_frames():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
+
 def log_incident(db: Session, session_id: int, kind: str, details: str = None):
     db.add(ExamIncident(session_id=session_id, incident_type=kind, details=details or ""))
     db.commit()
+
 
 def count_recent_incidents(db: Session, session_id: int, kind: str, seconds: int) -> int:
     rows = db.execute(text("""
@@ -98,8 +69,26 @@ def count_recent_incidents(db: Session, session_id: int, kind: str, seconds: int
     """), {"sid": session_id, "kind": kind, "secs": seconds}).fetchone()
     return rows[0] if rows else 0
 
+
+mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(
+    static_image_mode=False,
+    max_num_faces=1,
+    refine_landmarks=True,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
+
+
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+YAW_MAX_DEG = 30
+PITCH_MAX_DEG = 25
+LOOK_AWAY_REQUIRED_HITS = 3
+LOOK_AWAY_WINDOW_SECONDS = 10
+
+
 def estimate_head_pose_degrees_bounded(image_bgr) -> Optional[tuple]:
-    """Returns (yaw_deg, pitch_deg) or None if landmarks not found."""
     img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     res = face_mesh.process(img_rgb)
     if not res.multi_face_landmarks:
@@ -107,43 +96,54 @@ def estimate_head_pose_degrees_bounded(image_bgr) -> Optional[tuple]:
 
     h, w = image_bgr.shape[:2]
     lms = res.multi_face_landmarks[0].landmark
-
-    idxs = [1, 152, 33, 263, 61, 291]  
+    idxs = [1, 152, 33, 263, 61, 291]
     pts_2d = [(int(lms[i].x * w), int(lms[i].y * h)) for i in idxs]
 
     pts_3d = np.array([
-        [0.0, 0.0, 0.0],          # Nose
-        [0.0, -330.0, -65.0],     # Chin
-        [-225.0, -170.0, -135.0], # Left eye
-        [225.0, -170.0, -135.0],  # Right eye
-        [-150.0, 150.0, -125.0],  # Left mouth
-        [150.0, 150.0, -125.0],   # Right mouth
+        [0.0, 0.0, 0.0],
+        [0.0, -330.0, -65.0],
+        [-225.0, -170.0, -135.0],
+        [225.0, -170.0, -135.0],
+        [-150.0, 150.0, -125.0],
+        [150.0, 150.0, -125.0],
     ], dtype=np.float64)
 
     pts_2d = np.array(pts_2d, dtype=np.float64)
-
     focal_length = w
     center = (w / 2, h / 2)
-    cam_matrix = np.array([
-        [focal_length, 0, center[0]],
-        [0, focal_length, center[1]],
-        [0, 0, 1]
-    ], dtype="double")
-
+    cam_matrix = np.array([[focal_length, 0, center[0]],
+                           [0, focal_length, center[1]],
+                           [0, 0, 1]], dtype="double")
     dist_coeffs = np.zeros((4, 1))
-    success, rvec, tvec = cv2.solvePnP(pts_3d, pts_2d, cam_matrix, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE)
+
+    success, rvec, tvec = cv2.solvePnP(
+        pts_3d, pts_2d, cam_matrix, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE
+    )
     if not success:
         return None
 
     rot_mat, _ = cv2.Rodrigues(rvec)
-    sy = math.sqrt(rot_mat[0,0]**2 + rot_mat[1,0]**2)
-    pitch = math.degrees(math.atan2(-rot_mat[2,0], sy))
-    yaw   = math.degrees(math.atan2(rot_mat[1,0], rot_mat[0,0]))
-    return (yaw, pitch)
+    sy = math.sqrt(rot_mat[0, 0] ** 2 + rot_mat[1, 0] ** 2)
+    pitch = math.degrees(math.atan2(-rot_mat[2, 0], sy))
+    yaw = math.degrees(math.atan2(rot_mat[1, 0], rot_mat[0, 0]))
+    return yaw, pitch
 
-@app.get("/video_feed")
-def video_feed():
-    return StreamingResponse(gen_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+Base.metadata.create_all(bind=engine)
+app = FastAPI(title="Face Recognition Attendance System")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+os.makedirs(IMAGE_DIR, exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+camera = cv2.VideoCapture(0)
 
 
 @app.post("/students/register")
@@ -151,13 +151,23 @@ async def register_student(
     name: str = Form(...),
     email: Optional[str] = Form(None),
     roll_number: Optional[str] = Form(None),
-    image: UploadFile = File(...),
+    image: Optional[UploadFile] = File(None),
+    video: Optional[UploadFile] = File(None)
 ):
-    img_bytes = await image.read()
-    img = read_image_from_bytes(img_bytes)
-    emb, bbox = extract_normed_embedding(img)
-    if emb is None:
-        raise HTTPException(status_code=400, detail="No face detected. Try a clearer, front-facing photo.")
+    if video:
+        video_bytes = await video.read()
+        frame, emb, bbox = extract_best_frame_from_video(video_bytes)
+        if emb is None:
+            raise HTTPException(status_code=400, detail="No face detected in video.")
+        img_bytes = None
+    elif image:
+        img_bytes = await image.read()
+        frame = read_image_from_bytes(img_bytes)
+        emb, bbox = extract_normed_embedding(frame)
+        if emb is None:
+            raise HTTPException(status_code=400, detail="No face detected.")
+    else:
+        raise HTTPException(status_code=400, detail="No image or video provided.")
 
     with SessionLocal() as db:
         student = Student(name=name, email=email, roll_number=roll_number)
@@ -165,7 +175,76 @@ async def register_student(
         db.flush()
 
         if SAVE_IMAGES:
-            path = save_image(student.id, img_bytes)
+            if frame is not None:
+                if img_bytes is None:
+                    _, buffer = cv2.imencode('.jpg', frame)
+                    img_bytes = buffer.tobytes()
+                path = save_image(student.id, img_bytes)
+                db.add(FaceImage(student_id=student.id, image_path=path))
+
+        db.add(FaceEmbedding(student_id=student.id, embedding=emb.tolist()))
+        db.commit()
+        db.refresh(student)
+
+    return {"status": "ok", "student_id": student.id, "bbox": bbox}
+
+
+@app.post("/students/{student_id}/add-embedding")
+async def add_embedding(
+    student_id: int,
+    image: Optional[UploadFile] = File(None),
+    video: Optional[UploadFile] = File(None)
+):
+    if video:
+        video_bytes = await video.read()
+        frame, emb, bbox = extract_best_frame_from_video(video_bytes)
+        if emb is None:
+            raise HTTPException(status_code=400, detail="No face detected in video.")
+        img_bytes = None
+    elif image:
+        img_bytes = await image.read()
+        frame = read_image_from_bytes(img_bytes)
+        emb, bbox = extract_normed_embedding(frame)
+        if emb is None:
+            raise HTTPException(status_code=400, detail="No face detected.")
+    else:
+        raise HTTPException(status_code=400, detail="No image or video provided.")
+
+    with SessionLocal() as db:
+        st = db.get(Student, student_id)
+        if not st:
+            raise HTTPException(status_code=404, detail="Student not found")
+
+        if SAVE_IMAGES and frame is not None:
+            if img_bytes is None:
+                _, buffer = cv2.imencode('.jpg', frame)
+                img_bytes = buffer.tobytes()
+            path = save_image(student_id, img_bytes)
+            db.add(FaceImage(student_id=student_id, image_path=path))
+
+        db.add(FaceEmbedding(student_id=student_id, embedding=emb.tolist()))
+        db.commit()
+
+    return {"status": "ok", "student_id": student_id, "bbox": bbox}
+@app.post("/students/register_video")
+async def register_student_video(
+    name: str = Form(...),
+    email: Optional[str] = Form(None),
+    roll_number: Optional[str] = Form(None),
+    video: UploadFile = File(...),
+):
+    video_bytes = await video.read()
+    frame, emb, bbox = extract_best_frame_from_video(video_bytes)
+    if emb is None:
+        raise HTTPException(status_code=400, detail="No face detected in video.")
+
+    with SessionLocal() as db:
+        student = Student(name=name, email=email, roll_number=roll_number)
+        db.add(student)
+        db.flush() 
+        if SAVE_IMAGES and frame is not None:
+            _, buffer = cv2.imencode('.jpg', frame)
+            path = save_image(student.id, buffer.tobytes())
             db.add(FaceImage(student_id=student.id, image_path=path))
 
         db.add(FaceEmbedding(student_id=student.id, embedding=emb.tolist()))
@@ -173,6 +252,29 @@ async def register_student(
         db.refresh(student)
 
     return {"status": "ok", "student_id": student.id, "bbox": bbox}
+
+@app.post("/students/{student_id}/add-embedding_video")
+async def add_embedding_video(student_id: int, video: UploadFile = File(...)):
+    video_bytes = await video.read()
+    frame, emb, bbox = extract_best_frame_from_video(video_bytes)
+    if emb is None:
+        raise HTTPException(status_code=400, detail="No face detected in video.")
+
+    with SessionLocal() as db:
+        student = db.get(Student, student_id)
+        if not student:
+            raise HTTPException(status_code=404, detail="Student not found")
+
+        if SAVE_IMAGES and frame is not None:
+            _, buffer = cv2.imencode('.jpg', frame)
+            path = save_image(student_id, buffer.tobytes())
+            db.add(FaceImage(student_id=student_id, image_path=path))
+
+        db.add(FaceEmbedding(student_id=student_id, embedding=emb.tolist()))
+        db.commit()
+
+    return {"status": "ok", "student_id": student_id, "bbox": bbox}
+
 
 
 @app.post("/students/{student_id}/add-embedding")
@@ -314,7 +416,6 @@ async def exam_monitor(session_id: int = Form(...), image: UploadFile = File(...
         if session.status != "active":
             return {"status": session.status, "reason": session.reason_locked}
 
-        # 1. Face count
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, 1.2, 5)
         if len(faces) == 0:
@@ -326,7 +427,6 @@ async def exam_monitor(session_id: int = Form(...), image: UploadFile = File(...
             db.commit(); log_incident(db, session.id, "multiple_faces")
             return {"status": session.status, "reason": session.reason_locked}
 
-        # 2. Identity check
         emb, _ = extract_normed_embedding(frame)
         if emb is None:
             session.status = "locked"; session.reason_locked = "Face not clear"
@@ -340,7 +440,6 @@ async def exam_monitor(session_id: int = Form(...), image: UploadFile = File(...
             db.commit(); log_incident(db, session.id, "face_mismatch", f"sim={sim:.3f}")
             return {"status": session.status, "reason": session.reason_locked}
 
-        # 3. Head pose
         pose = estimate_head_pose_degrees_bounded(frame)
         if pose is not None:
             yaw, pitch = pose

@@ -1,0 +1,14 @@
+# Ignore virtual environments
+.venv/
+
+# Ignore environment variables
+.env
+
+# Ignore cache files
+__pycache__/
+
+# Ignore face images
+static/face_images/*.jpg
+
+# Ignore compiled Python files
+*.pyc

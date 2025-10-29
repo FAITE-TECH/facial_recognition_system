@@ -31,26 +31,150 @@
   </nav>
 
   <section id="register" class="active">
-    <h2>Register New Student</h2>
-    <form id="registerForm">
-      <label>Name: <input type="text" name="name" required></label>
-      <label>Email: <input type="email" name="email"></label>
-      <label>Roll Number: <input type="text" name="roll_number"></label>
-      <label>Photo: <input type="file" name="image" accept="image/*" required></label>
+  <h2>Register New Student</h2>
+  <form id="registerForm">
+    <label>Name: <input type="text" name="name" required></label>
+    <label>Email: <input type="email" name="email"></label>
+    <label>Roll Number: <input type="text" name="roll_number"></label>
+    <label class="muted">Choose either an image or a video (video preferred for robustness)</label>
+    <label>Photo: <input type="file" id="imageFile" name="image" accept="image/*"></label>
+    <label>Video (mp4/webm): <input type="file" id="videoFile" name="video" accept="video/*"></label>
+    <div style="margin-top:8px;">
       <button type="submit">Register</button>
-    </form>
-    <p id="registerStatus"></p>
-  </section>
+      <button type="button" onclick="registerFromCamera()">Register from Camera (capture photo)</button>
+    </div>
+  </form>
+
+  <p id="registerStatus" class="small"></p>
+  <pre id="registerJson"></pre>
+</section>
+
+<script>
+document.getElementById("registerForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const statusEl = document.getElementById("registerStatus");
+  const resultEl = document.getElementById("registerJson");
+
+  const name = form.name.value.trim();
+  const email = form.email.value.trim();
+  const roll_number = form.roll_number.value.trim();
+  const imageFile = document.getElementById("imageFile").files[0];
+  const videoFile = document.getElementById("videoFile").files[0];
+
+  if (!imageFile && !videoFile) {
+    statusEl.textContent = "Please upload an image or video.";
+    statusEl.style.color = "red";
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("name", name);
+  formData.append("email", email);
+  formData.append("roll_number", roll_number);
+  if (videoFile) {
+    formData.append("video", videoFile);
+  } else {
+    formData.append("image", imageFile);
+  }
+
+  statusEl.textContent = "Registering...";
+  statusEl.style.color = "gray";
+
+  try {
+    const response = await fetch("http://127.0.0.1:8000/students/register", {
+      method: "POST",
+      body: formData
+    });
+
+    const result = await response.json();
+    resultEl.textContent = JSON.stringify(result, null, 2);
+
+    if (response.ok) {
+      if (videoFile) {
+        statusEl.textContent = "✅ Registration done successfully with video!";
+      } else {
+        statusEl.textContent = "✅ Registration done successfully with photo!";
+      }
+      statusEl.style.color = "green";
+    } else {
+      statusEl.textContent = "❌ Registration failed: " + (result.detail || "Unknown error");
+      statusEl.style.color = "red";
+    }
+
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = "❌ Error connecting to server.";
+    statusEl.style.color = "red";
+  }
+});
+</script>
+
+
 
   <section id="embedding">
-    <h2>Add Embedding for Student</h2>
-    <form id="embeddingForm">
-      <label>Student ID: <input type="number" name="student_id" required></label>
-      <label>Photo: <input type="file" name="image" accept="image/*" required></label>
-      <button type="submit">Add Embedding</button>
-    </form>
-    <p id="embeddingStatus"></p>
-  </section>
+  <h2>Add Embedding for Student</h2>
+
+  <h3>Image Embedding</h3>
+  <form id="embeddingForm">
+    <label>Student ID: <input type="number" name="student_id" required></label>
+    <label>Photo: <input type="file" name="image" accept="image/*" required></label>
+    <button type="submit">Add Embedding (image)</button>
+  </form>
+
+  <p id="embeddingStatus" class="small"></p>
+  <pre id="embeddingJson"></pre>
+</section>
+
+<script>
+document.getElementById("embeddingForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  
+  const form = event.target;
+  const statusEl = document.getElementById("embeddingStatus");
+  const resultEl = document.getElementById("embeddingJson");
+
+  const studentId = form.student_id.value.trim();
+  const imageFile = form.image.files[0];
+
+  if (!imageFile) {
+    statusEl.textContent = "Please select an image.";
+    statusEl.style.color = "red";
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("student_id", studentId);
+  formData.append("image", imageFile);
+
+  statusEl.textContent = "Adding embedding...";
+  statusEl.style.color = "gray";
+
+  try {
+    const response = await fetch("http://127.0.0.1:8000/students/add_embedding", {
+      method: "POST",
+      body: formData
+    });
+
+    const result = await response.json();
+    resultEl.textContent = JSON.stringify(result, null, 2);
+
+    if (response.ok) {
+      statusEl.textContent = "✅ Embedding added successfully!";
+      statusEl.style.color = "green";
+    } else {
+      statusEl.textContent = "❌ Failed to add embedding: " + (result.detail || "Unknown error");
+      statusEl.style.color = "red";
+    }
+
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = "❌ Error connecting to server.";
+    statusEl.style.color = "red";
+  }
+});
+</script>
+
 
   <section id="attendance">
     <h2>Mark Attendance</h2>
@@ -95,9 +219,32 @@
 
     document.getElementById("registerForm").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const formData = new FormData(e.target);
+      const formData = new FormData();
+
+      const name = e.target.name.value;
+      const email = e.target.email.value;
+      const roll = e.target.roll_number.value;
+      const imageFile = document.getElementById("imageFile").files[0];
+      const videoFile = document.getElementById("videoFile").files[0];
+
+      formData.append("name", name);
+      formData.append("email", email);
+      formData.append("roll_number", roll);
+
+      let endpoint = "http://127.0.0.1:8000/students/register";
+
+      if (videoFile) {
+        formData.append("video", videoFile);
+        endpoint = "http://127.0.0.1:8000/students/register_video";
+      } else if (imageFile) {
+        formData.append("image", imageFile);
+      } else {
+        alert("Please select either an image or a video!");
+        return;
+      }
+
       try {
-        const res = await fetch("http://127.0.0.1:8000/students/register", { method: "POST", body: formData });
+        const res = await fetch(endpoint, { method: "POST", body: formData });
         const data = await res.json();
         document.getElementById("registerStatus").innerText = JSON.stringify(data, null, 2);
       } catch (err) {
