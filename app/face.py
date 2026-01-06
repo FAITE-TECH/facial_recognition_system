@@ -4,8 +4,6 @@ import numpy as np
 
 from insightface.app import FaceAnalysis
 
-# Initialize face app once (CPU via onnxruntime)
-# name='buffalo_l' provides detection+alignment+embedding pipeline
 face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
 face_app.prepare(ctx_id=0, det_size=(640, 640))
 

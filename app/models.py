@@ -3,7 +3,7 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
 from .db import Base
-
+from sqlalchemy import DateTime
 
 class Student(Base):
     __tablename__ = "students"
@@ -75,6 +75,8 @@ class ExamSession(Base):
     reason_locked = Column(String(255), nullable=True)
     start_time = Column(DateTime, default=datetime.utcnow)
     end_time = Column(DateTime, nullable=True)
+
+    look_away_start = Column(DateTime, nullable=True)
 
     exam = relationship("Exam", backref="sessions")
     student = relationship("Student", backref="exam_sessions")

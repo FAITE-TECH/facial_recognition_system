@@ -1,19 +1,21 @@
 import os
 import uuid
 import math
-import datetime
 from typing import Optional, Union
+from datetime import datetime
 
 import numpy as np
 import cv2
 import mediapipe as mp
 
+from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from .video import extract_best_frame_from_video
+from insightface.app import FaceAnalysis
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -22,6 +24,9 @@ from .db import SessionLocal, engine, Base
 from .models import Student, FaceEmbedding, FaceImage, Attendance, Exam, ExamSession, ExamIncident
 from .config import FACE_THRESHOLD, SAVE_IMAGES, IMAGE_DIR
 from .face import read_image_from_bytes, extract_normed_embedding, best_match
+face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
+face_app.prepare(ctx_id=0)  # use ctx_id=1 if you have GPU
+
 
 def save_image(student_id: int, img_bytes: bytes) -> str:
     fname = f"{student_id}_{uuid.uuid4().hex}.jpg"
@@ -83,50 +88,59 @@ face_mesh = mp_face_mesh.FaceMesh(
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
 YAW_MAX_DEG = 30
-PITCH_MAX_DEG = 25
-LOOK_AWAY_REQUIRED_HITS = 3
-LOOK_AWAY_WINDOW_SECONDS = 10
+PITCH_UP_MAX = 25
+PITCH_DOWN_MIN = -30
+LOOK_AWAY_SECONDS = 2.5
 
-
-def estimate_head_pose_degrees_bounded(image_bgr) -> Optional[tuple]:
+def estimate_head_pose_degrees_bounded(image_bgr):
     img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     res = face_mesh.process(img_rgb)
     if not res.multi_face_landmarks:
         return None
 
     h, w = image_bgr.shape[:2]
-    lms = res.multi_face_landmarks[0].landmark
-    idxs = [1, 152, 33, 263, 61, 291]
-    pts_2d = [(int(lms[i].x * w), int(lms[i].y * h)) for i in idxs]
+    lm = res.multi_face_landmarks[0].landmark
 
-    pts_3d = np.array([
-        [0.0, 0.0, 0.0],
-        [0.0, -330.0, -65.0],
-        [-225.0, -170.0, -135.0],
-        [225.0, -170.0, -135.0],
-        [-150.0, 150.0, -125.0],
-        [150.0, 150.0, -125.0],
-    ], dtype=np.float64)
+    idx = [1, 33, 263, 199, 61, 291]
 
-    pts_2d = np.array(pts_2d, dtype=np.float64)
+    face_2d = []
+    for i in idx:
+        x = int(lm[i].x * w)
+        y = int(lm[i].y * h)
+        face_2d.append([x, y])
+
+    face_2d = np.array(face_2d, dtype=np.float64)
+
+    face_3d = np.array([
+        [0.0, 0.0, 0.0],          # Nose
+        [-225.0, -170.0, -135.0], # Left eye
+        [225.0, -170.0, -135.0],  # Right eye
+        [0.0, -330.0, -65.0],     # Chin
+        [-150.0, 150.0, -125.0],  # Left mouth
+        [150.0, 150.0, -125.0]    # Right mouth
+    ])
+
     focal_length = w
     center = (w / 2, h / 2)
-    cam_matrix = np.array([[focal_length, 0, center[0]],
-                           [0, focal_length, center[1]],
-                           [0, 0, 1]], dtype="double")
-    dist_coeffs = np.zeros((4, 1))
+    cam_matrix = np.array([
+        [focal_length, 0, center[0]],
+        [0, focal_length, center[1]],
+        [0, 0, 1]
+    ], dtype="double")
 
-    success, rvec, tvec = cv2.solvePnP(
-        pts_3d, pts_2d, cam_matrix, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE
-    )
+    dist = np.zeros((4, 1))
+
+    success, rvec, tvec = cv2.solvePnP(face_3d, face_2d, cam_matrix, dist)
     if not success:
         return None
 
     rot_mat, _ = cv2.Rodrigues(rvec)
-    sy = math.sqrt(rot_mat[0, 0] ** 2 + rot_mat[1, 0] ** 2)
-    pitch = math.degrees(math.atan2(-rot_mat[2, 0], sy))
-    yaw = math.degrees(math.atan2(rot_mat[1, 0], rot_mat[0, 0]))
+
+    pitch = math.degrees(math.atan2(-rot_mat[2, 1], rot_mat[2, 2]))
+    yaw   = math.degrees(math.atan2(rot_mat[1, 0], rot_mat[0, 0]))
+
     return yaw, pitch
+
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Face Recognition Attendance System")
@@ -413,59 +427,76 @@ async def exam_monitor(session_id: int = Form(...), image: UploadFile = File(...
         session = db.get(ExamSession, session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+
         if session.status != "active":
             return {"status": session.status, "reason": session.reason_locked}
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.2, 5)
-        if len(faces) == 0:
-            session.status = "locked"; session.reason_locked = "No face detected"
-            db.commit(); log_incident(db, session.id, "no_face")
-            return {"status": session.status, "reason": session.reason_locked}
-        if len(faces) > 1:
-            session.status = "locked"; session.reason_locked = "Multiple faces detected"
-            db.commit(); log_incident(db, session.id, "multiple_faces")
-            return {"status": session.status, "reason": session.reason_locked}
+        faces = face_app.get(frame)
+        if len(faces) != 1:
+            session.status = "locked"
+            session.reason_locked = "No or multiple faces detected"
+            db.commit()
+            log_incident(db, session.id, "face_count")
+            return {"status": "locked"}
+
+        now = datetime.utcnow()
+
+        if session.look_away_start is not None and not isinstance(session.look_away_start, datetime):
+            session.look_away_start = None
+            db.commit()
+
+        pose = estimate_head_pose_degrees_bounded(frame)
+
+        if pose:
+            yaw, pitch = pose
+            yaw = max(min(yaw, 60.0), -60.0)
+            pitch = max(min(pitch, 45.0), -45.0)
+
+            looking_away = (
+                abs(yaw) > YAW_MAX_DEG or
+                pitch < PITCH_DOWN_MIN or
+                pitch > PITCH_UP_MAX
+            )
+
+            if looking_away:
+                if session.look_away_start is None:
+                    session.look_away_start = now
+                    db.commit()
+                    log_incident(db, session.id, "looking_away_start")
+                else:
+                    elapsed = (now - session.look_away_start).total_seconds()
+                    if elapsed >= LOOK_AWAY_SECONDS:
+                        session.status = "locked"
+                        session.reason_locked = "Looking away too long"
+                        db.commit()
+                        log_incident(db, session.id, "looking_away_locked")
+                        return {"status": "locked"}
+            else:
+                if session.look_away_start:
+                    elapsed = (now - session.look_away_start).total_seconds()
+                    if elapsed > 0.3:
+                        session.look_away_start = None
+                        db.commit()
 
         emb, _ = extract_normed_embedding(frame)
         if emb is None:
-            session.status = "locked"; session.reason_locked = "Face not clear"
-            db.commit(); log_incident(db, session.id, "no_face", "unclear")
-            return {"status": session.status, "reason": session.reason_locked}
+            session.status = "locked"
+            session.reason_locked = "Face unclear"
+            db.commit()
+            return {"status": "locked"}
 
         all_embs = load_all_embeddings(db)
         sid, sim = best_match(emb, all_embs)
+
         if sid != session.student_id or sim < FACE_THRESHOLD:
-            session.status = "locked"; session.reason_locked = "Face mismatch"
-            db.commit(); log_incident(db, session.id, "face_mismatch", f"sim={sim:.3f}")
-            return {"status": session.status, "reason": session.reason_locked}
+            session.status = "locked"
+            session.reason_locked = "Face mismatch"
+            db.commit()
+            log_incident(db, session.id, "face_mismatch")
+            return {"status": "locked"}
 
-        pose = estimate_head_pose_degrees_bounded(frame)
-        if pose is not None:
-            yaw, pitch = pose
-            if abs(yaw) > YAW_MAX_DEG or abs(pitch) > PITCH_MAX_DEG:
-                log_incident(db, session.id, "looking_away", f"yaw={yaw:.1f},pitch={pitch:.1f}")
-                hits = count_recent_incidents(db, session.id, "looking_away", LOOK_AWAY_WINDOW_SECONDS)
-                if hits >= LOOK_AWAY_REQUIRED_HITS:
-                    session.status = "locked"; session.reason_locked = "Looking away (repeated)"
-                    db.commit()
-                    return {"status": session.status, "reason": session.reason_locked}
-
-        db.commit()
         return {"status": "active"}
 
-
-@app.post("/exam/unlock")
-async def exam_unlock(session_id: int = Form(...)):
-    with SessionLocal() as db:
-        session = db.get(ExamSession, session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        session.status = "active"
-        session.reason_locked = None
-        db.commit()
-        log_incident(db, session.id, "manual_unlock")
-        return {"status": "unlocked", "session_id": session.id}
 
 
 @app.post("/exam/end")
@@ -475,7 +506,7 @@ async def exam_end(session_id: int = Form(...)):
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
         session.status = "completed"
-        session.end_time = datetime.datetime.utcnow()
+        session.end_time = datetime.utcnow()
         db.commit()
         return {"status": "completed"}
 
